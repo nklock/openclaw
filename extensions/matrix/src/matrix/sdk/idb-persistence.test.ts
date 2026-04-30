@@ -6,14 +6,25 @@ import {
   drainFileLockStateForTest,
   resetFileLockStateForTest,
 } from "openclaw/plugin-sdk/file-lock";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { persistIdbToDisk, restoreIdbFromDisk } from "./idb-persistence.js";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  persistIdbToDisk,
+  restoreIdbFromDisk,
+  terminatePersistWorker,
+} from "./idb-persistence.js";
 import {
   clearAllIndexedDbState,
   readDatabaseRecords,
   seedDatabase,
 } from "./idb-persistence.test-helpers.js";
 import { LogService } from "./logger.js";
+
+// Force the inline-fallback path for the existing suite. The worker
+// .js artifact only exists after `pnpm build`; under vitest we want to
+// exercise the same lock + atomic-write semantics on the same code
+// path the kill-switch (MATRIX_IDB_PERSIST_WORKER=off) selects.
+const previousWorkerEnv = process.env.MATRIX_IDB_PERSIST_WORKER;
+process.env.MATRIX_IDB_PERSIST_WORKER = "off";
 
 describe("Matrix IndexedDB persistence", () => {
   let tmpDir: string;
@@ -29,6 +40,7 @@ describe("Matrix IndexedDB persistence", () => {
     warnSpy.mockRestore();
     await clearAllIndexedDbState();
     resetFileLockStateForTest();
+    await terminatePersistWorker();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -153,4 +165,31 @@ describe("Matrix IndexedDB persistence", () => {
     expect(fs.existsSync(lockPath)).toBe(false);
     await drainFileLockStateForTest();
   });
+
+  it("writes the snapshot atomically — no .tmp.<pid> leftover after success", async () => {
+    const snapshotPath = path.join(tmpDir, "atomic-write.json");
+    await seedDatabase({
+      name: "openclaw-matrix-test::matrix-sdk-crypto",
+      storeName: "sessions",
+      records: [{ key: "room-1", value: { session: "abc123" } }],
+    });
+
+    await persistIdbToDisk({ snapshotPath, databasePrefix: "openclaw-matrix-test" });
+
+    expect(fs.existsSync(snapshotPath)).toBe(true);
+    const leftoverTmp = fs
+      .readdirSync(tmpDir)
+      .filter((name) => name.startsWith("atomic-write.json.tmp."));
+    expect(leftoverTmp).toEqual([]);
+  });
+});
+
+// Restore the env var after this file's tests run so any subsequent
+// suite that wants the worker path back gets it.
+afterAll(() => {
+  if (previousWorkerEnv === undefined) {
+    delete process.env.MATRIX_IDB_PERSIST_WORKER;
+  } else {
+    process.env.MATRIX_IDB_PERSIST_WORKER = previousWorkerEnv;
+  }
 });

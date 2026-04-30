@@ -298,12 +298,25 @@ function buildUnifiedDistEntries(): Record<string, string> {
   };
 }
 
+// Per-plugin runtime helper entries that need to be emitted as siblings
+// of the main plugin bundle but are NOT plugin manifest extensions.
+// Used for files that are loaded via `new Worker(filename)` or
+// `child_process.fork()` at runtime — they must exist as standalone
+// .js artifacts in dist/extensions/<id>/, but registering them as
+// `openclaw.extensions` in package.json would make the host's bundled-
+// capability loader try to import them as plugins, which is wrong.
+const PLUGIN_EXTRA_RUNTIME_ENTRIES: Record<string, readonly string[]> = {
+  matrix: ["./src/matrix/sdk/idb-persistence-worker.ts"],
+};
+
 function buildBundledPluginConfigs(): UserConfig[] {
-  return stagedBundledPluginBuildEntries.map(({ id, packageJson, sourceEntries }) =>
-    nodeBuildConfig({
+  return stagedBundledPluginBuildEntries.map(({ id, packageJson, sourceEntries }) => {
+    const extraEntries = PLUGIN_EXTRA_RUNTIME_ENTRIES[id] ?? [];
+    const allEntries = [...sourceEntries, ...extraEntries];
+    return nodeBuildConfig({
       clean: false,
       entry: Object.fromEntries(
-        sourceEntries.map((entry) => [
+        allEntries.map((entry) => [
           normalizeBundledPluginOutEntry(entry),
           `extensions/${id}/${entry.replace(/^\.\//u, "")}`,
         ]),
@@ -317,8 +330,8 @@ function buildBundledPluginConfigs(): UserConfig[] {
           },
         ),
       },
-    }),
-  );
+    });
+  });
 }
 
 export default defineConfig([

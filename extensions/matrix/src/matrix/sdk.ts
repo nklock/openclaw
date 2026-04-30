@@ -669,18 +669,24 @@ export class MatrixClient {
     // Final persist on shutdown
     this.syncStore?.markCleanShutdown();
     if (loadedMatrixCryptoRuntime) {
-      const { persistIdbToDisk } = loadedMatrixCryptoRuntime;
+      const { persistIdbToDisk, terminatePersistWorker } = loadedMatrixCryptoRuntime;
       this.stopPersistPromise = Promise.all([
         persistIdbToDisk({
           snapshotPath: this.idbSnapshotPath,
           databasePrefix: this.cryptoDatabasePrefix,
         }).catch(noop),
         this.syncStore?.flush().catch(noop),
-      ]).then(() => undefined);
+      ])
+        // Terminate the persist worker only after the final persist has
+        // landed, otherwise an in-flight write would be cancelled mid-
+        // round-trip and the snapshot wouldn't reflect the post-shutdown
+        // state.
+        .then(() => terminatePersistWorker().catch(noop))
+        .then(() => undefined);
       return;
     }
     this.stopPersistPromise = loadMatrixCryptoRuntime()
-      .then(async ({ persistIdbToDisk }) => {
+      .then(async ({ persistIdbToDisk, terminatePersistWorker }) => {
         await Promise.all([
           persistIdbToDisk({
             snapshotPath: this.idbSnapshotPath,
@@ -688,6 +694,7 @@ export class MatrixClient {
           }).catch(noop),
           this.syncStore?.flush().catch(noop),
         ]);
+        await terminatePersistWorker().catch(noop);
       })
       .catch(noop)
       .then(() => undefined);
